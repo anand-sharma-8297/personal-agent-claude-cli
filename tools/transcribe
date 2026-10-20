@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# transcribe <audio file> [language] — speech to text via Groq Whisper (whisper-large-v3, Hindi by default).
+# Auto-detects language (Hindi, English, Hinglish) unless a code like "hi" or "en" is given.
+# Prints only the transcript. Key: ~/.local/state/personal-agent/secrets/groq.env (never print it).
+set -euo pipefail
+f="${1:?usage: transcribe <audio file> [language]}"; lang="${2:-hi}"
+[[ -f "$f" ]] || { echo "transcribe: no such file: $f" >&2; exit 1; }
+key="$(grep -m1 '^GROQ_API_KEY=' "$HOME/.local/state/personal-agent/secrets/groq.env" 2>/dev/null | cut -d= -f2-)"
+[[ -n "$key" ]] || { echo "transcribe: voice notes are not set up (no Groq key). Re-run the setup wizard to add one." >&2; exit 2; }
+# Groq accepts flac/mp3/mp4/mpeg/mpga/m4a/ogg/opus/wav/webm by NAME; Telegram voice notes are .oga (Ogg Opus),
+# so send other names as .ogg (same container) instead of copying the file.
+name="$(basename "$f")"; ext="${name##*.}"; ext="${ext,,}"
+case "$ext" in flac|mp3|mp4|mpeg|mpga|m4a|ogg|opus|wav|webm) ;; *) name="${name%.*}.ogg" ;; esac
+args=(-F "file=@$f;filename=$name" -F model=whisper-large-v3 -F response_format=text)
+[[ -n "$lang" ]] && args+=(-F "language=$lang")
+out="$(curl -sS --max-time 90 -w '\n%{http_code}' -H "Authorization: Bearer $key" "${args[@]}" \
+      https://api.groq.com/openai/v1/audio/transcriptions)"
+code="${out##*$'\n'}"; body="${out%$'\n'*}"
+if [[ "$code" != "200" ]]; then echo "transcribe: Groq HTTP $code: ${body:0:300}" >&2; exit 1; fi
+printf '%s\n' "$body" | sed 's/^[[:space:]]*//'
