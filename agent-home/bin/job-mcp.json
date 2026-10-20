@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "browser_personal": {
+      "type": "http",
+      "url": "http://127.0.0.1:8931/mcp"
+    },
+    "browser_work": {
+      "type": "http",
+      "url": "http://127.0.0.1:8933/mcp"
+    }
+  }
+}
