@@ -1,0 +1,12 @@
+Weekly memory maintenance. Work only inside the memory/ folder.
+
+1. Read memory/INDEX.md and every file it lists (skip journal/ except the current month).
+2. Merge duplicate or overlapping facts into one place. Fix facts that contradict each other
+   (keep the newer one; if unsure, keep both and mark "UNSURE").
+3. Delete facts that are clearly stale (finished one-off tasks, old dates that no longer matter).
+4. Make sure every file in memory/ (except journal/) has exactly one line in INDEX.md, with an accurate
+   description, and INDEX.md has no lines for files that don't exist. Keep INDEX.md under 150 lines.
+5. If any single topic file is over ~300 lines, split it into smaller topic files and update INDEX.md.
+6. Never delete journal files. Never store secrets.
+
+Final message: 2-4 bullet points of what you changed, or "Memory is tidy, no changes." if nothing changed.
