@@ -3,7 +3,8 @@
 // - Streams the agent's browser tab (Chrome DevTools screencast) and sends your taps/typing back to it.
 // - Your password goes phone -> this laptop -> the website. It never passes through Telegram or Claude.
 // - Only answers devices on your Tailscale network (100.64.0.0/10, fd7a:115c:a1e0::/48) or this laptop,
-//   and only with a valid, unexpired token from login-link.sh.
+//   and only with a valid, unexpired token: a login link (login-link.sh, one at a time) or a pinned link
+//   (live-pin.json next to the token file, one per browser, kept by step-watch.py; Done doesn't expire it).
 // - No npm packages: Node's built-in http + WebSocket client.
 //
 // Env: LOGIN_HELPER_PORT (8932), CDP_URL (http://127.0.0.1:9222), LOGIN_TOKEN_FILE (required)
@@ -11,11 +12,14 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import path from 'node:path';
 
 const PORT = Number(process.env.LOGIN_HELPER_PORT || 8932);
 const CDP_URL = process.env.CDP_URL || 'http://127.0.0.1:9222';
 const TOKEN_FILE = process.env.LOGIN_TOKEN_FILE;
 if (!TOKEN_FILE) throw new Error('LOGIN_TOKEN_FILE is required');
+const PIN_FILE = path.join(path.dirname(TOKEN_FILE), 'live-pin.json');
+const BROWSER_CDP = { personal: 9222, work: 9223 };
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -35,11 +39,24 @@ function readToken() {
   catch { return null; }
 }
 
-function tokenValid(given) {
-  const t = readToken();
-  if (!t || !t.token || !given || Date.now() > Number(t.expires)) return false;
-  const a = Buffer.from(String(given)), b = Buffer.from(String(t.token));
+function sameToken(given, want) {
+  if (!given || !want) return false;
+  const a = Buffer.from(String(given)), b = Buffer.from(String(want));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// What a token opens: { kind: 'login' | 'pin', cdp, match } or null.
+function session(given) {
+  const t = readToken();
+  if (t && Date.now() <= Number(t.expires) && sameToken(given, t.token)) return { kind: 'login', cdp: Number(t.cdp), match: t.match };
+  let pin = null;
+  try { pin = JSON.parse(fs.readFileSync(PIN_FILE, 'utf8')); } catch {}
+  if (pin && Date.now() <= Number(pin.expires)) {
+    for (const [browser, tok] of Object.entries(pin.tokens || {})) {
+      if (BROWSER_CDP[browser] && sameToken(given, tok)) return { kind: 'pin', cdp: BROWSER_CDP[browser] };
+    }
+  }
+  return null;
 }
 
 function expireToken() {
@@ -87,14 +104,13 @@ class Cdp {
   close() { try { this.ws.close(); } catch {} }
 }
 
-// The login link chooses the browser (personal/work) by writing its DevTools port into the token file.
-function cdpUrl() {
-  const cdp = Number((readToken() || {}).cdp);
-  return cdp ? `http://127.0.0.1:${cdp}` : CDP_URL;
+// Each link names its browser (personal/work) by DevTools port: the login token file's "cdp", or the pinned link's browser.
+function cdpUrl(sess) {
+  return sess && sess.cdp ? `http://127.0.0.1:${sess.cdp}` : CDP_URL;
 }
 
-async function listTabs() {
-  const res = await fetch(`${cdpUrl()}/json/list`);
+async function listTabs(sess) {
+  const res = await fetch(`${cdpUrl(sess)}/json/list`);
   const all = await res.json();
   return all.filter((t) => t.type === 'page' && !/^(devtools|chrome-extension):/.test(t.url));
 }
@@ -107,12 +123,12 @@ function broadcast(event, data) {
   for (const res of live.clients) res.write(payload);
 }
 
-async function attach(tabId) {
-  const tabs = await listTabs();
+async function attach(tabId, sess) {
+  const tabs = await listTabs(sess);
   if (!tabs.length) throw new Error('no-tabs');
   let tab = tabs.find((t) => t.id === tabId);
   if (!tab) {
-    const match = (readToken() || {}).match;
+    const match = sess && sess.match;
     tab = (match && tabs.find((t) => t.url.toLowerCase().includes(String(match).toLowerCase()))) || tabs[0];
   }
   if (live.cdp && !live.cdp.closed && live.tabId === tab.id) return tab;
@@ -201,18 +217,19 @@ const server = http.createServer(async (req, res) => {
   if (!isAllowedAddress(req.socket.remoteAddress)) { req.socket.destroy(); return; }
   const url = new URL(req.url, 'http://x');
   const token = url.searchParams.get('t');
-  if (!tokenValid(token)) {
+  const sess = session(token);
+  if (!sess) {
     return send(res, 403, PAGE_EXPIRED, 'text/html; charset=utf-8');
   }
   try {
-    if (req.method === 'GET' && url.pathname === '/') return send(res, 200, PAGE, 'text/html; charset=utf-8');
+    if (req.method === 'GET' && url.pathname === '/') return send(res, 200, PAGE.replace('__KIND__', sess.kind), 'text/html; charset=utf-8');
 
     if (req.method === 'GET' && url.pathname === '/stream') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       live.clients.add(res);
       req.on('close', () => live.clients.delete(res));
       try {
-        await attach(url.searchParams.get('tab'));
+        await attach(url.searchParams.get('tab'), sess);
         res.write(`event: info\ndata: ${JSON.stringify({ url: live.url, title: live.title })}\n\n`);
         if (live.frame) res.write(`event: frame\ndata: ${JSON.stringify({ img: live.frame, w: live.meta.deviceWidth, h: live.meta.deviceHeight })}\n\n`);
       } catch (e) {
@@ -221,7 +238,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/tabs') {
-      const tabs = await listTabs();
+      const tabs = await listTabs(sess);
       return send(res, 200, tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, current: t.id === live.tabId })));
     }
     if (req.method === 'POST' && url.pathname === '/input') {
@@ -229,9 +246,9 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/done') {
-      expireToken();
+      if (sess.kind === 'login') expireToken();
       if (live.cdp) { live.cdp.send('Page.stopScreencast').catch(() => {}); live.cdp.close(); live.cdp = null; }
-      log('login session finished by user');
+      log(`${sess.kind} session finished by user`);
       return send(res, 200, { ok: true });
     }
     send(res, 404, { error: 'not found' });
@@ -298,6 +315,7 @@ const PAGE = `<!doctype html>
 <div id="pad">Trackpad<br>slide 1 finger = move pointer · tap = click<br>slide 2 fingers = scroll<br><br><small>You can also tap on the page to click. What you type goes straight to the laptop's browser, not to Telegram.</small></div>
 <script>
 const t = new URLSearchParams(location.search).get('t');
+const KIND = '__KIND__';   // 'login' (one-time link) or 'pin' (pinned link, stays valid)
 const q = (p) => p + (p.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(t);
 const $ = (id) => document.getElementById(id);
 let es, size = { w: 1440, h: 900 };
@@ -402,7 +420,9 @@ document.querySelectorAll('[data-key]').forEach((b) => b.onclick = () => post('/
 document.querySelectorAll('[data-scroll]').forEach((b) => b.onclick = () => post('/input', { type: 'scroll', dy: Number(b.dataset.scroll), fx: 0.5, fy: 0.5 }));
 $('done').onclick = async () => {
   await post('/done'); if (es) es.close();
-  document.body.innerHTML = '<div style="padding:24px;font:16px system-ui"><h2>Done</h2><p>This link is now closed. Go back to Telegram and reply <b>done</b> so the agent continues.</p></div>';
+  document.body.innerHTML = KIND === 'pin'
+    ? '<div style="padding:24px;font:16px system-ui"><h2>Closed</h2><p>Open the pinned link in Telegram again whenever you want to watch.</p></div>'
+    : '<div style="padding:24px;font:16px system-ui"><h2>Done</h2><p>This link is now closed. Go back to Telegram and reply <b>done</b> so the agent continues.</p></div>';
 };
 connect();
 </script>

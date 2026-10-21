@@ -10,7 +10,7 @@ Labels never include file contents, tool output, or anything that looks like a s
 """
 from __future__ import annotations
 
-import html, json, os, re, subprocess, time, urllib.parse, urllib.request
+import html, json, os, re, secrets, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -163,56 +163,50 @@ def label(name: str, inp: dict) -> str | None:
     return "• " + name
 
 
-# ---------- live-view link ----------
-# The first browser action of each task sends the owner a live-view link (bin/login-link.sh). A still-valid link for
-# the same browser is re-sent instead of making a new one, so a login link that is waiting for the owner keeps working.
-LOGIN_LINK = AGENT_HOME / "bin" / "login-link.sh"
-LOGIN_TOKEN = STATE / "login-token.json"
-BROWSER_CDP = {"personal": 9222, "work": 9223}
-LINK_REUSE = 15 * 60   # re-send the current link if it has at least this many seconds left
+# ---------- live-view links ----------
+# Pinned live-view links: one lasting token per browser in live-pin.json (read by login-helper.mjs), renewed every
+# PIN_DAYS days. They sit as buttons on the pinned status message. Login links (bin/login-link.sh) are separate, so
+# these never cancel them.
+LIVE_PIN = STATE / "live-pin.json"
+PIN_DAYS = 30
+LOGIN_HELPER_PORT = 8932
+_ts_ip = ""
 
 
-def live_link(browser: str) -> str | None:
+def tailscale_ip() -> str:
+    global _ts_ip
+    if not _ts_ip:
+        try:
+            out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=10).stdout.split()
+            _ts_ip = out[0] if out else ""
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _ts_ip
+
+
+def pin_links() -> dict[str, str]:
+    """{browser: live-view URL}, renewing the tokens when they have less than a day left."""
     try:
-        t = json.loads(LOGIN_TOKEN.read_text())
-        if (t.get("token") and int(t.get("cdp", 0)) == BROWSER_CDP[browser]
-                and float(t.get("expires", 0)) / 1000 - time.time() > LINK_REUSE):
-            ip = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=10).stdout.split()
-            if ip:
-                return f"http://{ip[0]}:8932/?t={t['token']}"
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
-        pass
-    try:
-        out = subprocess.run([str(LOGIN_LINK), "--browser", browser, "--minutes", "60"],
-                             capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError) as e:
-        log(f"live link failed: {e}")
-        return None
-    url = next((l.strip() for l in out.stdout.splitlines() if l.startswith("http")), None)
-    if not url:
-        log(f"live link failed: {clean(out.stderr or out.stdout, 150)}")
-    return url
-
-
-def send_live_link(browser: str):
-    url = live_link(browser)
-    if not url:
-        return
-    text = f"🖥️ Using the {browser} browser (Tailscale ON to watch)."
-    r = tg("sendMessage", chat_id=CHAT, text=text,
-           reply_markup=json.dumps({"inline_keyboard": [[{"text": "▶️ Watch live", "url": url}]]}))
-    how = "button"
-    if not r.get("ok"):   # fall back to the plain link if Telegram rejects the button
-        log(f"live link button failed: {r.get('error') or r.get('description')}")
-        r, how = tg("sendMessage", chat_id=CHAT, text=f"{text}\nLive view: {url}", disable_web_page_preview="true"), "plain"
-    log(f"live link ({browser}, {how}): {'sent' if r.get('ok') else 'send failed'}")
+        pin = json.loads(LIVE_PIN.read_text())
+    except (OSError, json.JSONDecodeError):
+        pin = {}
+    if float(pin.get("expires", 0)) / 1000 - time.time() < 86400 or set(pin.get("tokens", {})) != {"personal", "work"}:
+        pin = {"tokens": {b: secrets.token_hex(24) for b in ("personal", "work")},
+               "expires": int((time.time() + PIN_DAYS * 86400) * 1000)}
+        tmp = LIVE_PIN.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(pin, f)
+        tmp.replace(LIVE_PIN)
+        log("live-view pinned links renewed")
+    ip = tailscale_ip()
+    return {b: f"http://{ip}:{LOGIN_HELPER_PORT}/?t={t}" for b, t in pin["tokens"].items()} if ip else {}
 
 
 # ---------- progress message ----------
 class Turn:
     def __init__(self):
         self.start = time.time()
-        self.linked: set[str] = set()   # browsers that already got a live-view link in this task
         self.steps: list[str] = []
         self.msg_id: int | None = None
         self.last_edit = 0.0
@@ -267,7 +261,7 @@ class StatusPin:
         except (OSError, json.JSONDecodeError):
             st = {}
         self.msg_id = st.get("msg_id"); self.warned = st.get("warned", {})
-        self.text = None; self.state = None; self.last = 0.0
+        self.text = None; self.markup = None; self.state = None; self.last = 0.0
 
     def save(self):
         PIN_FILE.write_text(json.dumps({"msg_id": self.msg_id, "warned": self.warned}))
@@ -297,20 +291,25 @@ class StatusPin:
         wk, wkr = self.window(rl.get("seven_day"), now)
         model = str(u.get("model") or "?").split(" ")[0]          # "Opus 5.5" → "Opus" so the pinned bar fits one line
         text = f"{state} · {model} · 5h {h5} · Wk {wk}"   # one line only; reset times: /usage
-        if text != self.text:
-            self.show(text)
+        links = pin_links()
+        markup = json.dumps({"inline_keyboard": [[{"text": f"🖥️ {b.capitalize()}", "url": links[b]}
+                                                   for b in ("personal", "work") if b in links]]})
+        if (text, markup) != (self.text, self.markup):
+            self.show(text, markup)
         self.warn(rl, now)
 
-    def show(self, text: str):
+    def show(self, text: str, markup: str):
         if self.msg_id:
-            r = tg("editMessageText", chat_id=CHAT, message_id=self.msg_id, text=f"<i>{html.escape(text)}</i>", parse_mode="HTML")
+            r = tg("editMessageText", chat_id=CHAT, message_id=self.msg_id, text=f"<i>{html.escape(text)}</i>", parse_mode="HTML",
+                   reply_markup=markup)
             if r.get("ok") or "not modified" in str(r):
-                self.text = text; return
+                self.text, self.markup = text, markup; return
             if "not found" not in str(r) and "can't be edited" not in str(r):
                 return                          # network blip: retry on the next tick
-        r = tg("sendMessage", chat_id=CHAT, text=f"<i>{html.escape(text)}</i>", parse_mode="HTML", disable_notification="true")
+        r = tg("sendMessage", chat_id=CHAT, text=f"<i>{html.escape(text)}</i>", parse_mode="HTML", disable_notification="true",
+               reply_markup=markup)
         if r.get("ok"):
-            self.msg_id = r["result"]["message_id"]; self.text = text; self.save()
+            self.msg_id = r["result"]["message_id"]; self.text, self.markup = text, markup; self.save()
             tg("pinChatMessage", chat_id=CHAT, message_id=self.msg_id, disable_notification="true")
             log(f"status pin: new message {self.msg_id}")
 
@@ -389,10 +388,6 @@ def main():
             elif d.get("type") == "assistant" and isinstance(c, list) and turn is not None:
                 for b in c:
                     if b.get("type") == "tool_use":
-                        br = re.match(r"mcp__browser_(personal|work)__", b.get("name", ""))
-                        if br and br.group(1) not in turn.linked:
-                            turn.linked.add(br.group(1))
-                            send_live_link(br.group(1))
                         lab = label(b.get("name", ""), b.get("input") or {})
                         if lab:
                             turn.steps.append(lab); turn.dirty = True
