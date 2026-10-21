@@ -198,9 +198,14 @@ def send_live_link(browser: str):
     url = live_link(browser)
     if not url:
         return
-    r = tg("sendMessage", chat_id=CHAT, text=f"🖥️ Using the {browser} browser. Live view (Tailscale ON): {url}",
-           disable_web_page_preview="true")
-    log(f"live link ({browser}): {'sent' if r.get('ok') else 'send failed'}")
+    text = f"🖥️ Using the {browser} browser (Tailscale ON to watch)."
+    r = tg("sendMessage", chat_id=CHAT, text=text,
+           reply_markup=json.dumps({"inline_keyboard": [[{"text": "▶️ Watch live", "url": url}]]}))
+    how = "button"
+    if not r.get("ok"):   # fall back to the plain link if Telegram rejects the button
+        log(f"live link button failed: {r.get('error') or r.get('description')}")
+        r, how = tg("sendMessage", chat_id=CHAT, text=f"{text}\nLive view: {url}", disable_web_page_preview="true"), "plain"
+    log(f"live link ({browser}, {how}): {'sent' if r.get('ok') else 'send failed'}")
 
 
 # ---------- progress message ----------
