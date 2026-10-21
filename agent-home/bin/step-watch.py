@@ -10,7 +10,7 @@ Labels never include file contents, tool output, or anything that looks like a s
 """
 from __future__ import annotations
 
-import html, json, os, re, time, urllib.parse, urllib.request
+import html, json, os, re, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -163,10 +163,51 @@ def label(name: str, inp: dict) -> str | None:
     return "• " + name
 
 
+# ---------- live-view link ----------
+# The first browser action of each task sends the owner a live-view link (bin/login-link.sh). A still-valid link for
+# the same browser is re-sent instead of making a new one, so a login link that is waiting for the owner keeps working.
+LOGIN_LINK = AGENT_HOME / "bin" / "login-link.sh"
+LOGIN_TOKEN = STATE / "login-token.json"
+BROWSER_CDP = {"personal": 9222, "work": 9223}
+LINK_REUSE = 15 * 60   # re-send the current link if it has at least this many seconds left
+
+
+def live_link(browser: str) -> str | None:
+    try:
+        t = json.loads(LOGIN_TOKEN.read_text())
+        if (t.get("token") and int(t.get("cdp", 0)) == BROWSER_CDP[browser]
+                and float(t.get("expires", 0)) / 1000 - time.time() > LINK_REUSE):
+            ip = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=10).stdout.split()
+            if ip:
+                return f"http://{ip[0]}:8932/?t={t['token']}"
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        pass
+    try:
+        out = subprocess.run([str(LOGIN_LINK), "--browser", browser, "--minutes", "60"],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"live link failed: {e}")
+        return None
+    url = next((l.strip() for l in out.stdout.splitlines() if l.startswith("http")), None)
+    if not url:
+        log(f"live link failed: {clean(out.stderr or out.stdout, 150)}")
+    return url
+
+
+def send_live_link(browser: str):
+    url = live_link(browser)
+    if not url:
+        return
+    r = tg("sendMessage", chat_id=CHAT, text=f"🖥️ Using the {browser} browser. Live view (Tailscale ON): {url}",
+           disable_web_page_preview="true")
+    log(f"live link ({browser}): {'sent' if r.get('ok') else 'send failed'}")
+
+
 # ---------- progress message ----------
 class Turn:
     def __init__(self):
         self.start = time.time()
+        self.linked: set[str] = set()   # browsers that already got a live-view link in this task
         self.steps: list[str] = []
         self.msg_id: int | None = None
         self.last_edit = 0.0
@@ -343,6 +384,10 @@ def main():
             elif d.get("type") == "assistant" and isinstance(c, list) and turn is not None:
                 for b in c:
                     if b.get("type") == "tool_use":
+                        br = re.match(r"mcp__browser_(personal|work)__", b.get("name", ""))
+                        if br and br.group(1) not in turn.linked:
+                            turn.linked.add(br.group(1))
+                            send_live_link(br.group(1))
                         lab = label(b.get("name", ""), b.get("input") or {})
                         if lab:
                             turn.steps.append(lab); turn.dirty = True
