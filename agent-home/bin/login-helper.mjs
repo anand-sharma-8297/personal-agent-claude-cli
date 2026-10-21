@@ -160,8 +160,11 @@ async function handleInput(body) {
       await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
       break;
+    case 'move': // trackpad cursor: lets menus open on hover
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      break;
     case 'scroll':
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: Number(body.dy) || 0 });
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: Number(body.dx) || 0, deltaY: Number(body.dy) || 0 });
       break;
     case 'text':
       await cdp.send('Input.insertText', { text: String(body.text ?? '') });
@@ -248,7 +251,7 @@ const PAGE_EXPIRED = `<!doctype html><meta name=viewport content="width=device-w
 
 const PAGE = `<!doctype html>
 <html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <title>Agent login</title>
 <style>
   :root { --bg:#111; --fg:#eee; --muted:#999; --btn:#2a2a2a; --accent:#3b82f6; }
@@ -269,10 +272,17 @@ const PAGE = `<!doctype html>
   button.primary { background:var(--accent); color:#fff; }
   select { background:var(--btn); color:var(--fg); border:0; border-radius:8px; padding:8px; max-width:40%; }
   .hint { color:var(--muted); font-size:12px; text-align:center; }
+  #cursor { position:absolute; width:8px; height:8px; margin:-4px 0 0 -4px; border-radius:50%; background:#f43f5e;
+            border:1px solid #fff; box-shadow:0 0 2px #000; pointer-events:none; display:none; }
+  body.haspad { display:flex; flex-direction:column; min-height:100dvh; }
+  #pad { flex:1; min-height:140px; margin:0 8px calc(16px + env(safe-area-inset-bottom)); border:1px dashed #444; border-radius:12px; background:#181818; touch-action:none;
+         display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:13px; text-align:center;
+         padding:12px; user-select:none; -webkit-user-select:none; }
+  #pad.active { background:#1f2430; }
 </style></head>
-<body>
+<body class="haspad">
 <header><span id="url">connecting...</span><select id="tabs" title="Switch tab"></select></header>
-<div id="view"><div id="msg">Connecting to the agent's browser...</div><img id="screen" alt=""><div id="dot"></div></div>
+<div id="view"><div id="msg">Connecting to the agent's browser...</div><img id="screen" alt=""><div id="dot"></div><div id="cursor"></div></div>
 <footer>
   <div class="row">
     <input id="text" type="password" placeholder="Tap a field on the page, then type here" autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -284,8 +294,8 @@ const PAGE = `<!doctype html>
     <button data-scroll="-500">Up</button><button data-scroll="500">Down</button>
     <button id="done" class="primary" style="margin-left:auto">Done</button>
   </div>
-  <div class="hint">Tap on the page to click. What you type goes straight to the laptop's browser, not to Telegram.</div>
 </footer>
+<div id="pad">Trackpad<br>slide 1 finger = move pointer · tap = click<br>slide 2 fingers = scroll<br><br><small>You can also tap on the page to click. What you type goes straight to the laptop's browser, not to Telegram.</small></div>
 <script>
 const t = new URLSearchParams(location.search).get('t');
 const q = (p) => p + (p.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(t);
@@ -298,6 +308,7 @@ function connect(tab) {
   es.addEventListener('frame', (e) => {
     const f = JSON.parse(e.data); size = { w: f.w, h: f.h };
     $('screen').src = 'data:image/jpeg;base64,' + f.img; $('msg').style.display = 'none';
+    showCursor();
   });
   es.addEventListener('info', (e) => { const i = JSON.parse(e.data); if (i.url) $('url').textContent = i.url; });
   es.addEventListener('problem', (e) => {
@@ -327,10 +338,59 @@ $('tabs').onchange = (e) => connect(e.target.value);
 $('screen').addEventListener('click', (e) => {
   const r = e.target.getBoundingClientRect();
   const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
-  const d = $('dot'); d.style.left = (e.clientX - r.left) + 'px'; d.style.top = (e.clientY - r.top) + 'px';
-  d.style.opacity = 1; setTimeout(() => d.style.opacity = 0, 400);
+  cur.x = fx; cur.y = fy; showCursor(); flashDot();
   post('/input', { type: 'tap', fx, fy });
 });
+
+// ---- trackpad: 1 finger moves the pointer, tap clicks, 2 fingers scroll ----
+const cur = { x: 0.5, y: 0.5 };
+const SPEED = 1.5, SCROLL = 3;
+const clamp = (v) => Math.min(1, Math.max(0, v));
+function showCursor() {
+  const img = $('screen'), c = $('cursor'); if (!img.clientWidth) return;
+  c.style.display = 'block'; c.style.left = (cur.x * img.clientWidth) + 'px'; c.style.top = (cur.y * img.clientHeight) + 'px';
+}
+function flashDot() {
+  const img = $('screen'), d = $('dot');
+  d.style.left = (cur.x * img.clientWidth) + 'px'; d.style.top = (cur.y * img.clientHeight) + 'px';
+  d.style.opacity = 1; setTimeout(() => d.style.opacity = 0, 400);
+}
+let moveTimer = null, scrollTimer = null, scrollAcc = { x: 0, y: 0 };
+function queueMove() {
+  if (moveTimer) return;
+  moveTimer = setTimeout(() => { moveTimer = null; post('/input', { type: 'move', fx: cur.x, fy: cur.y }); }, 80);
+}
+function queueScroll(dx, dy) {
+  scrollAcc.x += dx; scrollAcc.y += dy; if (scrollTimer) return;
+  scrollTimer = setTimeout(() => {
+    scrollTimer = null; const s = scrollAcc; scrollAcc = { x: 0, y: 0 };
+    post('/input', { type: 'scroll', dx: Math.round(-s.x * SCROLL), dy: Math.round(-s.y * SCROLL), fx: cur.x, fy: cur.y });
+  }, 60);
+}
+const avg = (ts) => { let x = 0, y = 0; for (const t of ts) { x += t.clientX; y += t.clientY; } return { x: x / ts.length, y: y / ts.length }; };
+let last = null, startAt = 0, moved = 0, fingers = 0;
+const pad = $('pad');
+pad.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 1) { startAt = Date.now(); moved = 0; fingers = 1; pad.classList.add('active'); }
+  fingers = Math.max(fingers, e.touches.length); last = avg(e.touches);
+}, { passive: false });
+pad.addEventListener('touchmove', (e) => {
+  e.preventDefault(); if (!last) return;
+  const p = avg(e.touches), dx = p.x - last.x, dy = p.y - last.y; last = p; moved += Math.abs(dx) + Math.abs(dy);
+  if (e.touches.length >= 2) { queueScroll(dx, dy); return; }
+  const img = $('screen'); if (!img.clientWidth) return;
+  cur.x = clamp(cur.x + dx * SPEED / img.clientWidth); cur.y = clamp(cur.y + dy * SPEED / img.clientHeight);
+  showCursor(); queueMove();
+}, { passive: false });
+pad.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (e.touches.length) { last = avg(e.touches); return; }
+  pad.classList.remove('active'); last = null;
+  if (fingers === 1 && moved < 10 && Date.now() - startAt < 300) { flashDot(); post('/input', { type: 'tap', fx: cur.x, fy: cur.y }); }
+}, { passive: false });
+pad.addEventListener('touchcancel', () => { pad.classList.remove('active'); last = null; });
+window.addEventListener('resize', showCursor);
 
 $('send').onclick = async () => {
   const v = $('text').value; if (!v) return;
