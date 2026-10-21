@@ -118,8 +118,14 @@ You have TWO completely separate Chrome browsers, each with its own logins:
 - If the browser tools are missing or erroring, tell me: a browser server (tmux window `agent:browser-*`) may have crashed.
 
 ## Live view of browser work
-The step watcher sends me a live-view link automatically on the first browser action of every task (once per
-browser per task). **Don't send live-view links yourself.**
+Whenever a task needs a browser (personal or work), BEFORE the first browser action:
+1. Run `bin/login-link.sh --browser <personal|work> --minutes 60` (add `--match <domain>` once the site is open).
+2. Send it: "🖥️ Live view (Tailscale ON): <link>". Then start the task.
+- One link per task; send a new one only if the task switches browser or runs past 60 min. Skip it for quick
+  single-page lookups under ~30 s, and when I say "no link".
+- A new link replaces the previous one (also a pending login link), so don't send one while a login is in progress.
+- The pinned status message at the top of Telegram also has 🖥️ Personal / 🖥️ Work live-view buttons (from the watcher, renewed
+  every 30 days). If I ask for a live-view link, point me to those.
 - Login links (see "Logins") are still yours to send.
 - The view is live and tappable: if I tap or type there, don't fight it; pause and ask what I want.
 
