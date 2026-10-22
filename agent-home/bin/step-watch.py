@@ -203,6 +203,41 @@ def pin_links() -> dict[str, str]:
     return {b: f"http://{ip}:{LOGIN_HELPER_PORT}/?t={t}" for b, t in pin["tokens"].items()} if ip else {}
 
 
+# ---------- big-context reminder ----------
+# After each finished task, if the agent's context is at or above CONTEXT_WARN tokens (or half the context window,
+# whichever is smaller), send a short line suggesting /new. The size comes from statusline.json (written by
+# bin/statusline.sh after every reply).
+STATUSLINE = STATE / "statusline.json"
+CONTEXT_WARN = 500_000
+
+
+def context_tokens(sid: str) -> tuple[int, int] | None:
+    """(tokens in context, window size) for session sid, or None if unknown."""
+    try:
+        d = json.loads(STATUSLINE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if d.get("session_id") != sid:
+        return None
+    cw = d.get("context_window") or {}
+    u = cw.get("current_usage") or {}
+    used = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    return used, int(cw.get("context_window_size") or 0)
+
+
+def context_reminder(sid: str):
+    ctx = context_tokens(sid)
+    if not ctx:
+        return
+    used, size = ctx
+    if used < (min(CONTEXT_WARN, size // 2) if size else CONTEXT_WARN):
+        return
+    text = (f"🧠 Context is {used // 1000}K" + (f" of {size // 1000}K" if size else "") +
+            ". Send /new for a fresh session (memory and notes are kept).")
+    ok = tg("sendMessage", chat_id=CHAT, text=text, disable_notification="true").get("ok")
+    log(f"context reminder ({used // 1000}K): {'sent' if ok else 'send failed'}")
+
+
 # ---------- progress message ----------
 class Turn:
     def __init__(self):
@@ -397,7 +432,12 @@ def main():
         if status == "idle" and time.time() - turn.start > 4:   # ignore the brief idle right after a message lands
             idle_since = idle_since or time.time()
             if time.time() - idle_since >= 1.5:   # idle for a moment = task finished
-                turn.finish(); turn = None; idle_since = None
+                turn.finish()
+                try:
+                    context_reminder(sid)
+                except Exception as e:   # never let the reminder break the step feed
+                    log(f"context reminder error: {e}")
+                turn = None; idle_since = None
             continue
         idle_since = None
         if enabled:
