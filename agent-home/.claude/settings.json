@@ -13,7 +13,8 @@
       "WebSearch",
       "mcp__browser_personal",
       "mcp__browser_work",
-      "mcp__plugin_telegram_telegram"
+      "mcp__plugin_telegram_telegram",
+      "mcp__app"
     ],
     "deny": [
       "Read(~/.claude/.credentials.json)",
@@ -26,6 +27,7 @@
       "Read(~/.local/state/personal-agent/**)",
       "Edit(./CLAUDE.md)",
       "Edit(./bin/**)",
+      "Edit(./app/**)",
       "Edit(~/.bashrc)",
       "Edit(~/.profile)",
       "Edit(~/.config/autostart/**)",
@@ -37,7 +39,8 @@
   },
   "enabledMcpjsonServers": [
     "browser_personal",
-    "browser_work"
+    "browser_work",
+    "app"
   ],
   "enabledPlugins": {
     "telegram@claude-plugins-official": true
