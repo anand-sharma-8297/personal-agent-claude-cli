@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>__AGENT_NAME__</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="__AGENT_NAME__">
+<meta name="theme-color" content="#0d0b09" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+<link rel="manifest" href="/manifest.webmanifest?t=__TOKEN__">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/app.css">
+<script>window.TOKEN = '__TOKEN__';</script>
+<script src="/prefs.js"></script>
+<script defer src="/vendor/marked.js"></script>
+<script defer src="/vendor/purify.js"></script>
+<script defer src="/extras.js"></script>
+<script defer src="/app.js"></script>
+</head>
+<body data-agent="__AGENT_NAME__" data-owner="__OWNER_NAME__">
+<div id="app">
+  <header id="top">
+    <button class="icon-btn" id="sideBtn" aria-label="Sessions">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+    </button>
+    <div class="avatar" id="avatar" aria-hidden="true"><img class="av-img" src="/icons/avatar.png" alt=""><i class="ring"></i></div>
+    <div class="who">
+      <div class="name">__AGENT_NAME__</div>
+      <div class="status" id="status"><span class="sdot"></span><span id="statusText">Connecting…</span></div>
+    </div>
+    <button class="icon-btn desk-only" id="panelBtn" aria-label="Live panel" title="Live panel">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg>
+    </button>
+    <button class="icon-btn" id="menuBtn" aria-label="Menu">
+      <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+    </button>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main id="thread" aria-live="polite">
+    <div id="older" class="older" hidden><button id="olderBtn">Load earlier messages</button></div>
+    <div id="msgs"></div>
+    <div id="work" class="work" hidden>
+      <div class="work-head">
+        <div class="spinner"><i></i></div>
+        <div class="work-title"><span id="workLabel">Working</span> <span class="work-time" id="workTime">0:00</span></div>
+        <button class="work-toggle" id="workToggle" aria-label="Show all steps">
+          <span id="workCount">0 steps</span>
+          <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+      </div>
+      <div class="work-now" id="workNow">Thinking…</div>
+      <ol class="work-steps" id="workSteps"></ol>
+    </div>
+    <div id="end"></div>
+  </main>
+
+  <button id="toBottom" class="to-bottom" hidden aria-label="Scroll to latest">
+    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg><b id="unread" hidden></b>
+  </button>
+
+  <footer id="composer">
+    <div id="palette" class="palette" hidden></div>
+    <div id="replyBar" class="reply-bar" hidden><div><b>Replying</b><span id="replyText"></span></div><button id="replyX" aria-label="Cancel reply">×</button></div>
+    <div id="tray" class="tray" hidden></div>
+    <div class="bar" id="bar">
+      <button class="icon-btn round" id="attachBtn" aria-label="Attach">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <div class="field">
+        <textarea id="input" rows="1" placeholder="Message __AGENT_NAME__" enterkeyhint="send" autocomplete="off"></textarea>
+      </div>
+      <button class="icon-btn round stop" id="stopBtn" aria-label="Stop" hidden>
+        <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+      </button>
+      <button class="icon-btn round" id="micBtn" aria-label="Record voice note">
+        <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+      </button>
+      <button class="icon-btn round send" id="sendBtn" aria-label="Send" hidden>
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+    </div>
+    <div class="rec" id="rec" hidden>
+      <button class="icon-btn round" id="recCancel" aria-label="Discard">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+      </button>
+      <div class="rec-mid"><span class="rec-dot"></span><span id="recTime">0:00</span><canvas id="wave"></canvas></div>
+      <button class="icon-btn round send" id="recSend" aria-label="Send voice note">
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+    </div>
+    <input type="file" id="fileInput" multiple hidden>
+  </footer>
+  <footer id="pastBar" class="past-bar" hidden>
+    <div class="past-info"><b>Past session</b><span id="pastWhen"></span></div>
+    <div class="past-actions"><button id="pastBack">Back</button><button id="pastResume" class="primary">Continue this session</button></div>
+  </footer>
+</div>
+
+<div id="side" class="side" hidden>
+  <div class="side-bg" data-close></div>
+  <aside class="side-panel" aria-label="Sessions">
+    <div class="side-head">
+      <b>Sessions</b>
+      <button class="side-new" id="newSession"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New</button>
+    </div>
+    <div class="side-search"><input id="sideSearch" type="search" placeholder="Search sessions" autocomplete="off"><kbd class="desk-only">Ctrl K</kbd></div>
+    <div class="side-list" id="sideList"><p class="fine" style="padding:16px">Loading…</p></div>
+  </aside>
+</div>
+
+<aside id="panel" class="panel" hidden aria-label="Live panel">
+  <div class="panel-tabs">
+    <button data-tab="activity" class="on">Activity</button>
+    <button data-tab="personal">Personal</button>
+    <button data-tab="work">Work</button>
+    <button class="panel-x" id="panelX" aria-label="Hide panel">×</button>
+  </div>
+  <div class="panel-body" id="panelActivity"></div>
+  <div class="panel-body panel-browser" id="panelBrowser" hidden>
+    <iframe id="liveFrame" title="Browser live view" allow="clipboard-write"></iframe>
+    <p class="fine" id="liveNote">The live view shows the agent's browser. Clicks and typing here go to that browser.</p>
+  </div>
+</aside>
+
+<div id="drop" class="drop" hidden><div>Drop files to attach</div></div>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-bg" data-close></div>
+  <div class="sheet-card" role="dialog" aria-label="Menu">
+    <div class="grip"></div>
+    <div class="usage" id="usageBox"></div>
+    <div class="grid">
+      <button data-cmd="info"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Status</button>
+      <button data-cmd="model"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Model</button>
+      <button data-send="/new" data-confirm="Start a fresh session? Memory and notes are kept."><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New session</button>
+      <button data-send="/compact"><svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l6.5-6.5M3.5 20.5 10 14"/></svg>Compact</button>
+    </div>
+    <div class="row2" style="margin-top:14px"><button id="todayBtn" class="wide"><svg viewBox="0 0 24 24" style="width:18px;height:18px;vertical-align:-4px;margin-right:6px"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>Today</button><button id="customBtn" class="wide"><svg viewBox="0 0 24 24" style="width:18px;height:18px;vertical-align:-4px;margin-right:6px"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17c1.4 0 1.9-1 1.4-2.1-.6-1.3.2-2.6 1.6-2.6H17a3.5 3.5 0 0 0 3.5-3.5c0-4.9-3.8-8.8-8.5-8.8z"/><circle cx="8" cy="11" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16" cy="10" r="1"/></svg>Customize</button></div>
+    <div class="sheet-sec">Live view</div>
+    <div class="row2" id="liveRow"></div>
+    <div class="sheet-sec">Notifications</div>
+    <div class="row2"><button id="notifBtn" class="wide">Turn on notifications</button></div>
+    <button class="quiet-link" data-send="/restart" data-confirm="Restart the browsers and __AGENT_NAME__? Back in about a minute.">Restart __AGENT_NAME__ and the browsers</button>
+    <p class="fine" id="installTip" hidden>On iPhone: tap Share → <b>Add to Home Screen</b> first. Notifications and full-screen mode work from the Home Screen app.</p>
+  </div>
+</div>
+
+<div id="custom" class="sheet" hidden>
+  <div class="sheet-bg" data-close></div>
+  <div class="sheet-card" role="dialog" aria-label="Customize">
+    <div class="grip"></div>
+    <div class="sheet-sec" style="margin-top:4px">Profile picture</div>
+    <div class="cz-avatar">
+      <div class="avatar"><img class="av-img" src="/icons/avatar.png" alt=""></div>
+      <div class="cz-btns"><button id="avReset">Reset</button><button id="avPick">Change photo</button></div>
+      <input type="file" id="avFile" accept="image/*" hidden>
+    </div>
+    <div class="sheet-sec">Theme</div>
+    <div class="seg" id="czTheme"><button data-v="auto">Auto</button><button data-v="light">Light</button><button data-v="dark">Dark</button></div>
+    <div class="sheet-sec">Colour</div>
+    <div class="swatches" id="czAccent"></div>
+    <div class="sheet-sec">Text size</div>
+    <div class="seg" id="czText"><button data-v="s">Small</button><button data-v="m">Medium</button><button data-v="l">Large</button></div>
+    <div class="sheet-sec">Preview</div>
+    <div class="cz-preview"><div class="bubble agent">Namaste! Here are today’s numbers.</div><div class="bubble me">Thanks, __AGENT_NAME__</div></div>
+    <p class="fine">Saved on the laptop, so your phone and desktop match.</p>
+  </div>
+</div>
+
+<div id="today" class="sheet" hidden>
+  <div class="sheet-bg" data-close></div>
+  <div class="sheet-card" role="dialog" aria-label="Today">
+    <div class="grip"></div>
+    <div class="today-head"><b>Today</b><span id="todayWhen"></span></div>
+    <div id="todayBody"><p class="fine">Loading…</p></div>
+  </div>
+</div>
+
+<div id="viewer" class="viewer" hidden><img id="viewerImg" alt="" draggable="false"><button class="viewer-x" id="viewerX" aria-label="Close">×</button><a class="viewer-open" id="viewerOpen" target="_blank" rel="noopener">Open</a><div class="viewer-hint" id="viewerHint">Pinch or double-tap to zoom</div></div>
+<div id="pop" class="pop" hidden></div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>
