@@ -1,6 +1,7 @@
 # Personal agent kit
 
-Your own 24/7 personal AI agent on a spare laptop. You chat with it on **Telegram**, and it does the work with
+Your own 24/7 personal AI agent on a spare laptop. You chat with it on **Telegram** and in **its own app** on your
+phone, and it does the work with
 **Claude Code** (on your own Claude subscription) and **two real Chrome browsers** on the laptop: a personal one and
 a work one, each with its own logins.
 
@@ -14,6 +15,10 @@ What it can do:
 - Remember your preferences and how each website works (`memory/`)
 - Telegram extras: tap-to-answer buttons, a live "working…" step feed, a pinned status and usage bar, and menu commands
   `/new /sessions /model /usage /info /pending /stop`
+- **Its own app** (iPhone and Android, installed from the browser; private over Tailscale): chat with tables, charts
+  and Copy / Image / Excel buttons, live steps while it works, a Stop button, past sessions, voice notes, a Today
+  panel (pending items + scheduled jobs), theme and colour settings, and **phone notifications for alerts**
+  (alerts go to the app first; Telegram is the backup)
 - Look after itself: it restarts if it crashes, starts a fresh session every night, and comes back after a reboot
 
 ## What you need
@@ -40,6 +45,10 @@ The setup wizard walks you through everything, about 30-45 minutes in total:
 7. Voice notes: paste a Groq key (optional)
 8. Tailscale: scan the QR code with your phone
 9. The agent starts and says hi on Telegram 👋
+10. The app: the wizard gives it a private address on your Tailscale network and sends you its link on Telegram.
+    Open it on your phone, then **iPhone**: Share → Add to Home Screen · **Android** (Chrome): ⋮ → Install app.
+    In the app: menu → Turn on notifications. (First time on a Tailscale account, the wizard shows a link to switch on
+    HTTPS once.)
 
 Then sign in to your accounts (Google etc.) in the two Chrome windows titled **AGENT PERSONAL BROWSER** and
 **AGENT WORK BROWSER**, or later from your phone when the agent sends you a login link. Reboot once to check that it
@@ -70,6 +79,9 @@ Just message your bot. Examples:
 | Bot stopped answering after you ran `claude` | A second Telegram poller took over. Close it and run `~/agent-home/bin/restart-claude.sh` |
 | "Browser tools missing" | A browser window was closed. Send `/restart` |
 | Live view / login links don't open | Turn Tailscale ON on your phone (same account as the laptop) |
+| App link doesn't open on iPhone | Tailscale app → Settings → turn on **Use Tailscale DNS** |
+| Lost the app link / new phone | Ask the agent for your "app link" (it sends it on Telegram), or `~/agent-home/bin/app-link.sh` |
+| No app notifications | In the app: menu → Turn on notifications; on iPhone also Settings → Notifications → the app |
 | Running out of Claude usage | `/model sonnet`, and check `/usage` |
 
 ## Privacy
