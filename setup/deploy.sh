@@ -19,11 +19,15 @@ CHAT_ID="$(env_get TELEGRAM_CHAT_ID)"
 [[ "$CHAT_ID" =~ ^[0-9]+$ ]] || { echo "No TELEGRAM_CHAT_ID in $ENV_FILE. Run the setup wizard first." >&2; exit 1; }
 
 step "Copying the agent to $DEST"
-mkdir -p "$DEST"/{bin,.claude,memory/sites,memory/journal,schedules,workspace,downloads,logs}
+mkdir -p "$DEST"/{bin,.claude,memory/sites,memory/journal,schedules,workspace,downloads/inbox/app,logs}
 rm -f "$DEST"/bin/*
 cp -a "$KIT/agent-home/bin/." "$DEST/bin/"
 chmod +x "$DEST"/bin/*.sh "$DEST"/bin/*.py
-cp -a "$KIT/agent-home/.mcp.json" "$DEST/"
+sed "s#__HOME__#$HOME#g" "$KIT/agent-home/.mcp.json" > "$DEST/.mcp.json"
+# The app (its chat history and settings live in ~/.local/state/personal-agent/app, not here, so they survive updates).
+rm -rf "$DEST/app.new"; cp -a "$KIT/agent-home/app" "$DEST/app.new"
+[[ -d "$DEST/app/node_modules" ]] && mv "$DEST/app/node_modules" "$DEST/app.new/"
+rm -rf "$DEST/app"; mv "$DEST/app.new" "$DEST/app"
 cp -n "$KIT/agent-home/schedules/memory-cleanup.txt" "$DEST/schedules/" 2>/dev/null || true
 # Memory skeleton: only files that don't exist yet (never overwrite what the agent learned).
 for f in INDEX.md profile.md people.md pending.md sites/_TEMPLATE.md; do
@@ -58,6 +62,15 @@ else
     mv "$DEST/.claude/settings.kit.json" "$DEST/.claude/settings.json"
 fi
 
+step "App: installing its parts (npm)"
+( cd "$DEST/app" && npm ci --omit=dev --no-audit --no-fund --loglevel=error ) || { echo "npm install for the app failed." >&2; exit 1; }
+
+step "App: private link key"
+# app.json = the owner's link token + the secret the agent's app channel uses. Made once; kept on updates.
+APP_STATE="$HOME/.local/state/personal-agent/app"; mkdir -p "$APP_STATE"; chmod 700 "$APP_STATE"
+[[ -s "$APP_STATE/app.json" ]] || python3 -c 'import json, secrets; print(json.dumps({"token": secrets.token_hex(24), "bridge": secrets.token_hex(24)}))' > "$APP_STATE/app.json"
+chmod 600 "$APP_STATE/app.json"
+
 step "Helper commands (~/.local/bin)"
 mkdir -p "$HOME/.local/bin"
 install -m 755 "$KIT/tools/transcribe" "$HOME/.local/bin/transcribe"
@@ -81,7 +94,7 @@ cfg="$HOME/.claude.json"
 [[ -s "$cfg" ]] || echo '{}' > "$cfg"
 jq --arg p "$DEST" '.hasCompletedOnboarding = true
     | .projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true,
-                       enabledMcpjsonServers: ["browser_personal", "browser_work"]})' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg"
+                       enabledMcpjsonServers: ["browser_personal", "browser_work", "app"]})' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg"
 chmod 600 "$cfg"
 
 step "Start with the desktop"

@@ -36,6 +36,33 @@ tg_api() { curl -sS --max-time "${3:-20}" "https://api.telegram.org/bot$1/$2"; }
 trim() { sed -E 's/^[[:space:]]+|[[:space:]]+$//g' <<<"$1"; }
 has_desktop() { [[ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]] && pgrep -u "$(id -u)" -x gnome-shell >/dev/null; }
 
+# Private https address for the app: https://<laptop>.<tailnet>.ts.net:8443 (Tailscale only). The first time on a
+# Tailscale account, HTTPS must be switched on once; tailscale prints a link for that. Returns 0 when serving.
+app_serve() {
+    local out link
+    tailscale serve status 2>/dev/null | grep -q ':8443' && return 0
+    while true; do
+        out="$(timeout 25 sudo tailscale serve --bg --https=8443 http://127.0.0.1:8950 2>&1)" && return 0
+        tailscale serve status 2>/dev/null | grep -q ':8443' && return 0
+        link="$(grep -oE 'https://login\.tailscale\.com/[^ ]+' <<<"$out" | head -n1)"
+        if [[ -n "$link" ]]; then
+            msg "Switch on HTTPS for your Tailscale network (one time)
+
+The app needs a private https address. Open this link on any device signed in to the same Tailscale account and click Enable:
+
+$link
+
+Then press OK here." 16
+        else
+            yesno "Setting up the app address did not work:
+
+$(tail -n 4 <<<"$out")
+
+Try again?" 14 || return 1
+        fi
+    done
+}
+
 # ---------------------------------------------------------------- checks
 [[ $EUID -ne 0 ]] || die "run this as your normal user, not root (no sudo in front)."
 grep -qi '^ID=ubuntu' /etc/os-release 2>/dev/null || die "this kit supports Ubuntu Desktop only."
@@ -55,6 +82,9 @@ fi
 if [[ "$mode" == update ]]; then
     clear
     bash "$KIT/setup/deploy.sh" || die "updating the agent files failed (see above)."
+    if ! tailscale serve status 2>/dev/null | grep -q ':8443'; then
+        sudo -v && app_serve && "$DEST/bin/app-link.sh" >/dev/null 2>&1 && say "The app is ready: its link was sent to you on Telegram."
+    fi
     if tmux has-session -t agent 2>/dev/null; then
         "$DEST/bin/session.sh" restart >/dev/null
         say "Updated. The agent restarts as soon as it is idle (about a minute)."
@@ -67,7 +97,7 @@ fi
 
 msg "Welcome! This sets up your own personal AI agent on this laptop.
 
-You chat with it on Telegram; it works in two real Chrome browsers on this laptop (personal + work) and runs 24/7.
+You chat with it on Telegram and in its own app on your phone; it works in two real Chrome browsers on this laptop (personal + work) and runs 24/7.
 
 Have these ready (30-45 minutes in total):
   1. A Claude Pro or Max subscription (claude.ai)
@@ -247,7 +277,7 @@ for ((i = 0; i < 90; i++)); do
 done
 if $connected; then
     sleep 5
-    "$DEST/bin/notify.sh" "👋 Hi $(env_get OWNER_NAME)! I'm $name, your personal agent, and I'm ready.
+    "$DEST/bin/notify.sh" --telegram "👋 Hi $(env_get OWNER_NAME)! I'm $name, your personal agent, and I'm ready.
 Try: \"Open google.com in the personal browser and send me a screenshot.\"
 Menu (/) has /new /model /usage /info and more." || true
 else
@@ -260,9 +290,42 @@ It may be waiting on a question in its window. Open a terminal and run:
 The watchdog also retries every 5 minutes." 14
 fi
 
+# ---------------------------------------------------------------- the app (after Telegram works)
+app_ok=false
+if $connected; then
+    msg "Your $name app
+
+Besides Telegram, $name has its own chat app for your phone: answers with tables and charts, live steps while it works, and notifications for alerts.
+
+Next: the app gets a private address on your Tailscale network, and its link is sent to you on Telegram." 14
+    clear
+    if app_serve; then
+        for _ in $(seq 20); do curl -s -o /dev/null --max-time 2 http://127.0.0.1:8950/ && break; sleep 1; done
+        if url="$("$DEST/bin/app-link.sh" --print 2>/dev/null)" && "$DEST/bin/app-link.sh" >/dev/null 2>&1; then
+            app_ok=true
+            clear
+            say "Your app link (also sent to you on Telegram). Scan with your phone camera, or tap the link in Telegram:"
+            qrencode -t ANSIUTF8 "$url" 2>/dev/null || true
+            msg "Install the app on your phone
+
+The link is in your Telegram chat with @$bot (keep it private). Make sure Tailscale is ON on the phone, then:
+
+  • iPhone (Safari): open the link → Share → Add to Home Screen, then open it from the Home Screen
+  • Android (Chrome): open the link → ⋮ → Install app
+
+In the app: menu (•••) → Turn on notifications. Alerts then come to the app first (Telegram is the backup).
+
+If the page won't load on iPhone: Tailscale app → Settings → turn on 'Use Tailscale DNS'.
+Lost the link later? Ask $name for your \"app link\"." 22
+        fi
+    fi
+    $app_ok || msg "The app could not be set up right now; Telegram works as normal. Run the setup again later (choose Update) to finish the app." 10
+fi
+
 msg "Done! 🎉  $name is running.
 
   • Telegram: @$bot  (only your account can use it)
+  • App: $($app_ok && echo "link sent on Telegram" || echo "not set up yet (run the setup again → Update)")
   • Claude account: $acct
   • Two Chrome windows opened: AGENT PERSONAL BROWSER and AGENT WORK BROWSER. Sign in to your Google (and other) accounts there now, or later from your phone via the links $name sends.
 
