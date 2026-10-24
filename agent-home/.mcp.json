@@ -7,6 +7,13 @@
     "browser_work": {
       "type": "http",
       "url": "http://127.0.0.1:8933/mcp"
+    },
+    "app": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "__HOME__/agent-home/app/channel.mjs"
+      ]
     }
   }
 }
