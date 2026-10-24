@@ -3,10 +3,12 @@
 # When the owner sends "STOP" (capitals) on Telegram while the agent is busy, it presses Esc in the agent's
 # window, which cancels the running task at once (even in the middle of a long step), then tells the owner.
 # A STOP sent while the agent is idle is left to the agent itself (CLAUDE.md rule: reply "Stopped").
+# The app (app/server.mjs) writes $STATE_DIR/stop-request: {"from": "app"} for its Stop button, "app-msg" for a typed STOP.
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
 printf '\033]2;Agent - STOP watcher\007'
 pane="$TMUX_SESSION:claude"
+stop_req="$STATE_DIR/stop-request"
 stop_line='^← telegram · [0-9]+: (STOP|/stop)[!. ]*$'
 
 count_stops() { tmux capture-pane -p -t "$pane" -S -300 2>/dev/null | grep -cE "$stop_line"; }
@@ -28,8 +30,29 @@ while true; do
         # the input box instead, clear it and tell the owner here (otherwise they'd hear nothing).
         if tmux capture-pane -p -t "$pane" | grep -qE '^❯ (STOP|/stop)[!. ]*$'; then
             tmux send-keys -t "$pane" C-u
-            "$BIN_DIR/notify.sh" "🛑 Stopped. I cancelled the task I was working on. Tell me what to do next." ||
+            "$BIN_DIR/notify.sh" --telegram "🛑 Stopped. I cancelled the task I was working on. Tell me what to do next." ||
                 log stop 'notify failed'
+        fi
+        count="$(count_stops)"; status="$(session_status)"
+    fi
+    if [[ -f "$stop_req" ]]; then
+        from="$(jq -r '.from // "app"' "$stop_req" 2>/dev/null)"; rm -f "$stop_req"
+        if [[ "$status" == busy ]]; then
+            log stop "STOP from $from while busy: pressing Esc"
+            tmux send-keys -t "$pane" Escape
+            sleep 3
+            msg="🛑 Stopped. I cancelled the task I was working on. Tell me what to do next."
+            if [[ "$from" == app-msg ]]; then
+                # The typed STOP normally reaches the agent, which replies. If it was left in the input box, say it here.
+                if tmux capture-pane -p -t "$pane" | grep -qE '^❯ (STOP|/stop)[!. ]*$'; then
+                    tmux send-keys -t "$pane" C-u
+                    "$BIN_DIR/app-send.sh" "$msg" || log stop 'app notify failed'
+                fi
+            else
+                "$BIN_DIR/app-send.sh" "$msg" || log stop 'app notify failed'
+            fi
+        else
+            log stop "STOP from $from while idle: left to the agent"
         fi
         count="$(count_stops)"; status="$(session_status)"
     fi

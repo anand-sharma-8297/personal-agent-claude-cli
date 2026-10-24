@@ -18,6 +18,7 @@ fi
 # The STOP watcher must always run; start-agent.sh only starts what's missing.
 script_running stop-watcher.sh || "$BIN_DIR/start-agent.sh"
 script_running step-watch.sh || "$BIN_DIR/start-agent.sh"
+script_running start-app.sh || "$BIN_DIR/start-agent.sh"
 
 has_telegram() {  # is a "bun ... server.ts" process a descendant of $1?
     local child

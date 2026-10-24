@@ -57,6 +57,12 @@ if ! script_running step-watch.sh; then
     log agent 'launched step watcher'
 fi
 
+# App server (the agent's own chat app; app/server.mjs). Keeps running while Claude restarts.
+if ! script_running start-app.sh; then
+    open_window app "$BIN_DIR/start-app.sh"
+    log agent 'launched app server'
+fi
+
 if [[ -z "$(main_claude_pids)" ]] && ! script_running start-claude.sh; then
     open_window claude "$BIN_DIR/start-claude.sh"
     log agent 'launched main Claude session'

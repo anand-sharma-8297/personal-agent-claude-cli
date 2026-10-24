@@ -133,6 +133,13 @@ def label(name: str, inp: dict) -> str | None:
         act = name.rsplit("__", 1)[-1]
         return {"reply": "💬 sent you a message", "edit_message": "💬 updated a message",
                 "download_attachment": "📎 downloaded your attachment", "react": None}.get(act, "💬 " + act)
+    if name.startswith("mcp__app__"):
+        act = name.rsplit("__", 1)[-1]
+        return {"reply": "💬 sent you a message", "edit_message": "💬 updated a message", "react": None}.get(act, "💬 " + act)
+    m = re.match(r"mcp__claude_ai_(\w+?)__(?:\w+?_)?(search|read|get|list|create|update|send|schedule|add|copy|download|apply|label|unlabel|mark|trash|untrash|complete|delete)(\w*)$", name)
+    if m:   # claude.ai connectors: "🧩 Slack: search users"
+        svc = re.sub(r"^Google ", "", m.group(1).replace("_", " "))
+        return "🧩 " + clean(f"{svc}: {m.group(2)}{m.group(3).replace('_', ' ')}", 50)
     m = re.match(r"mcp__browser_(personal|work)__browser_(\w+)", name)
     if m:
         who, act = m.groups()
@@ -203,6 +210,67 @@ def pin_links() -> dict[str, str]:
     return {b: f"http://{ip}:{LOGIN_HELPER_PORT}/?t={t}" for b, t in pin["tokens"].items()} if ip else {}
 
 
+# ---------- activity.json: what the agent is doing now + the last few tasks (the app shows it live) ----------
+ACTIVITY = STATE / "activity.json"
+HISTORY = 10          # finished tasks kept
+ACT_STEPS = 60        # most recent steps kept per task
+
+
+def write_private(path: Path, data: dict):
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    tmp.replace(path)
+
+
+def line_time(d: dict) -> float:
+    """When a transcript line really happened (its own timestamp); now if missing. The transcript is sometimes
+    written in one burst at the end of a quick task, so the watcher's clock would put every step after the answer."""
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(d["timestamp"]).replace("Z", "+00:00")).timestamp()
+    except (KeyError, ValueError, TypeError):
+        return time.time()
+
+
+def channel_text(c) -> str:
+    """The owner's message text from a <channel …>text</channel> transcript line (secrets hidden)."""
+    s = c if isinstance(c, str) else " ".join(b.get("text", "") for b in (c or []) if isinstance(b, dict))
+    m = re.search(r"<channel [^>]*>(.*?)</channel>", s, re.S)
+    return clean(m.group(1), 160) if m else ""
+
+
+class Activity:
+    def __init__(self):
+        try:
+            self.history = json.loads(ACTIVITY.read_text()).get("history", [])[:HISTORY]
+        except (OSError, json.JSONDecodeError, AttributeError):
+            self.history = []
+        self.key = None; self.last = 0.0
+
+    def done(self, turn: "Turn"):
+        if turn.steps or turn.text:
+            self.history.insert(0, turn.summary(done=True)); del self.history[HISTORY:]
+        self.key = None
+
+    def write(self, session: tuple[str, str] | None, turn: "Turn | None"):
+        state = "offline" if not session else ("working" if turn or session[1] != "idle" else "idle")
+        key = (state, id(turn), len(turn.steps) if turn else 0, turn.text if turn else "")
+        if key == self.key and time.time() - self.last < 10:
+            return
+        try:
+            u = json.loads(USAGE_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            u = {}
+        rl, now = u.get("rate_limits") or {}, time.time()
+        write_private(ACTIVITY, {
+            "updated": now, "state": state, "task": turn.summary() if turn else None, "history": self.history,
+            "usage": {"model": str(u.get("model") or "?"), "five_hour": StatusPin.window(rl.get("five_hour"), now),
+                      "week": StatusPin.window(rl.get("seven_day"), now)}})
+        self.key, self.last = key, now
+
+
 # ---------- big-context reminder ----------
 # After each finished task, if the agent's context is at or above CONTEXT_WARN tokens (or half the context window,
 # whichever is smaller), send a short line suggesting /new. The size comes from statusline.json (written by
@@ -225,7 +293,7 @@ def context_tokens(sid: str) -> tuple[int, int] | None:
     return used, int(cw.get("context_window_size") or 0)
 
 
-def context_reminder(sid: str):
+def context_reminder(turn: "Turn", sid: str):
     ctx = context_tokens(sid)
     if not ctx:
         return
@@ -234,15 +302,22 @@ def context_reminder(sid: str):
         return
     text = (f"🧠 Context is {used // 1000}K" + (f" of {size // 1000}K" if size else "") +
             ". Send /new for a fresh session (memory and notes are kept).")
-    ok = tg("sendMessage", chat_id=CHAT, text=text, disable_notification="true").get("ok")
-    log(f"context reminder ({used // 1000}K): {'sent' if ok else 'send failed'}")
+    if turn.channel == "app":
+        ok = subprocess.run([str(AGENT_HOME / "bin/app-send.sh"), "--system", text], capture_output=True, timeout=20).returncode == 0
+    else:
+        ok = tg("sendMessage", chat_id=CHAT, text=text, disable_notification="true").get("ok")
+    log(f"context reminder ({used // 1000}K, {turn.channel}): {'sent' if ok else 'send failed'}")
 
 
 # ---------- progress message ----------
 class Turn:
-    def __init__(self):
+    def __init__(self, channel: str = "telegram"):
+        self.channel = channel            # where the task came from: "telegram" or "app"
         self.start = time.time()
         self.steps: list[str] = []
+        self.times: list[float] = []      # when each step started (activity.json)
+        self.text = ""                    # the owner's message (activity.json)
+        self.t0 = 0.0                     # when the owner's message really arrived (transcript time)
         self.msg_id: int | None = None
         self.last_edit = 0.0
         self.last_text = ""
@@ -257,7 +332,15 @@ class Turn:
         body = html.escape("\n".join([head] + lines))
         return f"<blockquote expandable><i>{body}</i></blockquote>"
 
+    def summary(self, done: bool = False) -> dict:
+        n = len(self.steps)
+        return {"channel": self.channel, "text": self.text, "start": self.t0 or self.start,
+                **({"secs": int(time.time() - self.start)} if done else {}), "count": n,
+                "steps": [{"t": t, "s": s} for t, s in zip(self.times[-ACT_STEPS:], self.steps[-ACT_STEPS:])]}
+
     def push(self, force: bool = False):
+        if self.channel == "app":   # the app shows activity.json itself
+            return
         if not self.steps or time.time() - self.start < MIN_SECONDS:
             return
         if not force and time.time() - self.last_edit < EDIT_EVERY:
@@ -274,7 +357,7 @@ class Turn:
         self.last_text, self.last_edit = text, time.time()
 
     def finish(self):
-        if self.msg_id is not None:
+        if self.msg_id is not None and self.channel == "telegram":
             tg("deleteMessage", chat_id=CHAT, message_id=self.msg_id)
         log(f"turn done: {len(self.steps)} steps, {int(time.time() - self.start)}s, msg={self.msg_id}")
 
@@ -372,6 +455,7 @@ def main():
         return
     log("step watcher started")
     pin = StatusPin()
+    act = Activity()
     sid = None; fh = None; turn: Turn | None = None; idle_since = None
     while True:
         time.sleep(POLL)
@@ -380,12 +464,16 @@ def main():
             pin.tick(s)
         except Exception as e:   # never let the status pin break the step feed
             log(f"status pin error: {e}")
+        try:
+            act.write(s, turn)
+        except Exception as e:   # never let the activity file break the step feed
+            log(f"activity error: {e}")
         if not s:
             continue
         cur_sid, status = s
         if cur_sid != sid:                      # new session (/new, restart, resume): follow the new transcript
             if turn:
-                turn.finish(); turn = None
+                turn.finish(); act.done(turn); turn = None
             sid = cur_sid
             path = PROJ / f"{sid}.jsonl"
             if fh:
@@ -410,9 +498,16 @@ def main():
                 continue
             c = d.get("message", {}).get("content")
             src = re.search(r'<channel source=\\?"([^"\\]+)', line) if d.get("type") == "user" else None
-            if src and "telegram" in src.group(1):
+            if src and src.group(1) == "app":
+                if turn is None:
+                    turn = Turn("app")
+                turn.text = turn.text or channel_text(c)
+                turn.t0 = turn.t0 or line_time(d)
+            elif src and "telegram" in src.group(1):
                 if turn is None:
                     turn = Turn()
+                turn.text = turn.text or channel_text(c)
+                turn.t0 = turn.t0 or line_time(d)
                 hide_keyboard()
                 # Instant "seen" signal: 👀 on the owner's message as soon as the agent has received it.
                 for mid in re.findall(r'message_id=\\?"(\d+)', line):
@@ -425,16 +520,16 @@ def main():
                     if b.get("type") == "tool_use":
                         lab = label(b.get("name", ""), b.get("input") or {})
                         if lab:
-                            turn.steps.append(lab); turn.dirty = True
+                            turn.steps.append(lab); turn.times.append(line_time(d)); turn.dirty = True
 
         if turn is None:
             continue
         if status == "idle" and time.time() - turn.start > 4:   # ignore the brief idle right after a message lands
             idle_since = idle_since or time.time()
             if time.time() - idle_since >= 1.5:   # idle for a moment = task finished
-                turn.finish()
+                turn.finish(); act.done(turn)
                 try:
-                    context_reminder(sid)
+                    context_reminder(turn, sid)
                 except Exception as e:   # never let the reminder break the step feed
                     log(f"context reminder error: {e}")
                 turn = None; idle_since = None

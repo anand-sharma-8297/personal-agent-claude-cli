@@ -4,6 +4,8 @@
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
 printf '\033]2;%s - Claude (Telegram)\007' "$AGENT_NAME"
+# App channel (app/channel.mjs): only this main session takes the owner's app messages (scheduled jobs don't).
+export APP_LISTEN=1
 cd "$AGENT_HOME"
 
 # Pin Claude Code's MCP client to the v1 runtime: on v2 (Claude Code 2.1.289) the Telegram channel
@@ -16,6 +18,15 @@ while true; do
     for ((waited = 0; waited < 120; waited += 2)); do browser_server_up && break; sleep 2; done
 
     args=(--channels "$CHANNEL_PLUGIN" --permission-mode dontAsk --name "$AGENT_NAME")
+    # The app channel (app/channel.mjs, in .mcp.json) is our own, not an approved plugin, so it loads as a development
+    # channel. That shows a "Loading development channels" warning at every start: confirm it automatically.
+    args+=(--dangerously-load-development-channels server:app)
+    ( for _ in $(seq 60); do
+          sleep 1
+          if tmux capture-pane -p -t "${TMUX_PANE:-agent:claude}" 2>/dev/null | grep -q 'I am using this for local development'; then
+              tmux send-keys -t "${TMUX_PANE:-agent:claude}" Enter; break
+          fi
+      done ) &
     # Remote Control: the session also shows up in the Claude app / claude.ai/code (AGENT_REMOTE_CONTROL=0 turns it off).
     [[ "$(env_get "$ENV_FILE" AGENT_REMOTE_CONTROL)" == 0 ]] || args+=(--remote-control "$AGENT_NAME")
     model="$(env_get "$ENV_FILE" AGENT_MODEL)"
